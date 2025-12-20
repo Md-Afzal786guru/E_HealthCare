@@ -1,22 +1,35 @@
-
+# utils.py
 import streamlit as st
 import random
 import time
-from db import get_users, add_user, add_chat_request, add_submission, add_chat_message, get_db_cursor, remove_user
+import bcrypt
+from db import (
+    get_patients_cursor, get_doctors_cursor, commit_patients, commit_doctors,
+    get_chat_requests, add_chat_request, add_submission, add_chat_message
+)
 
+# ----------------------------------------------------------------------
+# COLORS & MOCK DATA
+# ----------------------------------------------------------------------
 PRIMARY_BLUE = 'rgb(0, 102, 180)'
 SECONDARY_BLUE = 'rgb(50, 150, 250)'
 NAV_BAR_BG = '#1e1e1e'
 
-MOCK_SPECIALTIES = ["Cardiology", "Orthopedics (Bone)", "Pulmonology (Lung)", "Nephrology (Kidney)", "Neurology", "Pediatrics"]
+MOCK_SPECIALTIES = [
+    "Cardiology", "Orthopedics (Bone)", "Pulmonology (Lung)",
+    "Nephrology (Kidney)", "Neurology", "Pediatrics"
+]
 
+# ----------------------------------------------------------------------
+# PAGE STYLE
+# ----------------------------------------------------------------------
 def set_page_style():
     st.markdown(f"""
     <style>
     .stApp {{
-        background-color: #000000; /* Changed from #f0f8ff to black */
+        background-color: #000000;
         font-family: 'Inter', sans-serif;
-        color: #ffffff; /* Added to ensure default text is white for readability */
+        color: #ffffff;
     }}
     .header-bar {{
         background: linear-gradient(90deg, {PRIMARY_BLUE}, {SECONDARY_BLUE});
@@ -32,7 +45,7 @@ def set_page_style():
     }}
     .header-bar img {{
         border-radius: 50%;
-        background: #000000; /* Changed from white to black */
+        background: #000000;
         padding: 5px;
         height: 80px;
         width: 80px;
@@ -56,32 +69,32 @@ def set_page_style():
         vertical-align: middle;
     }}
     .notification-container {{
-        background-color: #000000; /* Changed from white to black */
+        background-color: #000000;
         border-radius: 12px;
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
         padding: 15px;
         margin-bottom: 20px;
-        color: #ffffff; /* Added to ensure text is readable */
+        color: #ffffff;
     }}
     .notification-item {{
         padding: 10px;
-        border-bottom: 1px solid #333; /* Changed from #eee to darker gray for contrast */
+        border-bottom: 1px solid #333;
     }}
     .notification-item:last-child {{
         border-bottom: none;
     }}
     .notification-unread {{
-        background-color: #1e40af; /* Changed from #e1f5fe to a darker blue for contrast */
+        background-color: #1e40af;
         font-weight: bold;
-        color: #ffffff; /* Added for readability */
+        color: #ffffff;
     }}
     .st-emotion-cache-1ftrux {{
         border-radius: 12px;
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
         border-top: 5px solid {PRIMARY_BLUE};
         padding: 20px;
-        background-color: #000000; /* Changed from white to black */
-        color: #ffffff; /* Added for readability */
+        background-color: #000000;
+        color: #ffffff;
     }}
     .stButton>button {{
         border-radius: 8px;
@@ -101,7 +114,7 @@ def set_page_style():
         border-radius: 50%;
         background: radial-gradient(circle, {SECONDARY_BLUE} 0%, {PRIMARY_BLUE} 100%);
         box-shadow: 0 5px 15px rgba(0, 0, 0, 0.4);
-        border: 4px solid #000000; /* Changed from #fff to black */
+        border: 4px solid #000000;
     }}
     .st-emotion-cache-nahz7x:hover {{
         transform: scale(1.05);
@@ -110,8 +123,8 @@ def set_page_style():
     .login-container {{
         text-align: center;
         margin-top: 30px;
-        background-color: #000000; /* Changed from #f8fafc to black */
-        color: #ffffff; /* Added for readability */
+        background-color: #000000;
+        color: #ffffff;
     }}
     .login-container h2 {{
         margin-bottom: 25px;
@@ -145,30 +158,22 @@ def set_page_style():
     #nav_btn_logout:hover {{
         background-color: #dc2626;
     }}
-    .accept-link {{
-        color: {PRIMARY_BLUE};
-        font-weight: bold;
-        cursor: pointer;
-    }}
-    .accept-link:hover {{
-        text-decoration: underline;
-    }}
     .chat-container {{
-        background-color: #000000; /* Changed from white to black */
+        background-color: #000000;
         border-radius: 12px;
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
         padding: 20px;
-        color: #ffffff; /* Added for readability */
+        color: #ffffff;
     }}
     .chat-messages {{
         height: 400px;
         overflow-y: auto;
         padding: 10px;
-        border: 1px solid #333; /* Changed from #ccc to darker gray for contrast */
+        border: 1px solid #333;
         border-radius: 8px;
         margin-bottom: 15px;
-        background-color: #1e1e1e; /* Changed from #f9f9f9 to dark gray for contrast */
-        color: #ffffff; /* Added for readability */
+        background-color: #1e1e1e;
+        color: #ffffff;
     }}
     .chat-message {{
         margin-bottom: 15px;
@@ -177,43 +182,21 @@ def set_page_style():
         max-width: 80%;
     }}
     .user-message {{
-        background-color: #1e40af; /* Changed from #e1f5fe to darker blue for contrast */
+        background-color: #1e40af;
         margin-left: auto;
         text-align: right;
-        color: #ffffff; /* Added for readability */
+        color: #ffffff;
     }}
     .doctor-message {{
-        background-color: #166534; /* Changed from #e8f5e9 to darker green for contrast */
+        background-color: #166534;
         margin-right: auto;
         text-align: left;
-        color: #ffffff; /* Added for readability */
+        color: #ffffff;
     }}
     .message-sender {{
         font-weight: bold;
         font-size: 0.8em;
-        color: #d1d5db; /* Changed from #555 to light gray for readability */
-    }}
-    .chat-input-area {{
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 10px 0;
-    }}
-    .chat-textarea {{
-        flex-grow: 1;
-        border-radius: 5px;
-        border: 1px solid #333; /* Changed from #ccc to darker gray */
-        padding: 8px;
-        min-height: 40px;
-        background-color: #1e1e1e; /* Added for consistency */
-        color: #ffffff; /* Added for readability */
-    }}
-    .chat-submit-btn {{
-        background-color: {PRIMARY_BLUE};
-        color: white;
-        padding: 8px 15px;
-        border-radius: 5px;
-        cursor: pointer;
+        color: #d1d5db;
     }}
     .stDataFrame table thead th {{
         background-color: #4ac1e2 !important;
@@ -222,147 +205,63 @@ def set_page_style():
         border-bottom: none !important;
     }}
     .stDataFrame table tbody tr:nth-child(even) {{
-        background-color: #333333; /* Changed from #f7f7f7 to darker gray */
-        color: #ffffff; /* Added for readability */
+        background-color: #333333;
+        color: #ffffff;
     }}
     .stDataFrame table tbody tr:hover {{
-        background-color: #1e40af !important; /* Changed from #e0f7fa to darker blue */
-        color: #ffffff !important; /* Added for readability */
+        background-color: #1e40af !important;
+        color: #ffffff !important;
     }}
     </style>
     """, unsafe_allow_html=True)
 
+# ----------------------------------------------------------------------
+# SESSION INITIALIZATION
+# ----------------------------------------------------------------------
 def init_session_state():
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-    if 'user_profile' not in st.session_state:
-        st.session_state.user_profile = None
-    if 'selected_role' not in st.session_state:
-        st.session_state.selected_role = 'patient'
-    if 'admin_view' not in st.session_state:
-        st.session_state.admin_view = "AddDoctor"
-    if 'portal_view' not in st.session_state:
-        st.session_state.portal_view = "Dashboard"
-    if 'next_doc_id' not in st.session_state:
-        st.session_state.next_doc_id = f"{random.randint(200, 999)}"
-    if 'next_request_id' not in st.session_state:
-        c = get_db_cursor()
-        c.execute('SELECT MAX(request_id) FROM chat_requests')
-        max_id = c.fetchone()[0]
-        st.session_state.next_request_id = (max_id + 1) if max_id else 10001
-    if 'active_chat_request' not in st.session_state:
-        st.session_state.active_chat_request = None
+    defaults = {
+        'logged_in': False,
+        'user_profile': None,
+        'selected_role': 'patient',
+        'admin_view': "AddDoctor",
+        'portal_view': "Dashboard",
+        'next_doc_id': f"{random.randint(200, 999)}",
+        'next_request_id': 10001,
+        'active_chat_request': None,
+        'verify_email': None,
+        'nav_view': "Login"
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-    c = get_db_cursor()
-    c.execute('SELECT COUNT(*) FROM users')
+    # Auto-increment request ID
+    c = get_doctors_cursor()
+    c.execute('SELECT MAX(request_id) FROM chat_requests')
+    max_id = c.fetchone()[0]
+    if max_id:
+        st.session_state.next_request_id = max_id + 1
+
+    # Seed admin only if not exists
+    c.execute('SELECT COUNT(*) FROM doctors WHERE email = ?', ('admin@app.com',))
     if c.fetchone()[0] == 0:
-        initial_users = [
-            ("admin@app.com", "admin", "System Admin", "N/A", None, None, None),
-            ("doctor@app.com", "doctor", "Dr. Afzal", "7260023491", "Cardiology", "101", "MD"),
+        from db import add_doctor
+        add_doctor(
+            email="admin@app.com",
+            password=bcrypt.hashpw("admin".encode(), bcrypt.gensalt()).decode(),
+            name="System Admin",
+            mobile="0000000000",
+            specialty="Admin",
+            doc_id="000",
+            qualification="System"
+        )
 
-        ]
-        for user in initial_users:
-            add_user(*user)
-
-        initial_requests = [
-            {
-                "request_id": 10000,
-                "patient_email": "patient@app.com",
-                "doctor_email": "doctor@app.com",
-                "specialty": "Cardiology",
-                "doctor_name": "Dr. Afzal",
-                "doctor_id": "101",
-                "qualification": "MD",
-                "query": "Follow-up question on blood test results.",
-                "status": "Accepted",
-                "patient_name": "Patient User",
-                "patient_id": "P5555678",
-                "flag": "N",
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                "request_id": 10001,
-                "patient_email": "jdoe@user.com",
-                "doctor_email": "doctor2@app.com",
-                "specialty": "Cardiology",
-                "doctor_name": "Dr. Sadab",
-                "doctor_id": "103",
-                "qualification": "MD, PhD",
-                "query": "Chest pain during exercise.",
-                "status": "Pending",
-                "patient_name": "Arshad",
-                "patient_id": "P5559012",
-                "flag": "N",
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                "request_id": 10002,
-                "patient_email": "jdoe@user.com",
-                "doctor_email": "doc_ortho@app.com",
-                "specialty": "Orthopedics (Bone)",
-                "doctor_name": "Dr. Ali",
-                "doctor_id": "102",
-                "qualification": "MBBS, MS",
-                "query": "Knee pain after a fall.",
-                "status": "Pending",
-                "patient_name": "Aarju",
-                "patient_id": "P5559012",
-                "flag": "N",
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-        ]
-        for req in initial_requests:
-            add_chat_request(req)
-
-        add_submission({
-            "date": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "symptoms": "Severe pain in right knee after a fall yesterday.",
-            "prediction": "AI suggests consulting Orthopedics immediately for potential ligament damage.",
-            "patient_email": "jdoe@user.com"
-        })
-
-        initial_messages = [
-            (10000, "Dr. Afzal", "doctor", "Hello, thank you for submitting your chat request. I am Dr.Afzal. How can I assist you with your follow-up results?", "10:00 AM"),
-            (10000, "Patient User", "patient", "Hello Dr. Carter. I received the lab report link and I'm a bit concerned about my high cholesterol reading. What steps should I take next?", "10:05 AM")
-        ]
-        for msg in initial_messages:
-            add_chat_message(*msg)
-
-        st.session_state.next_request_id = 10003
-
-def login_attempt(email, role):
-    users = get_users()
-    if email in users and users[email]["role"] == role:
-        st.session_state.logged_in = True
-        st.session_state.user_profile = users[email]
-        st.session_state.user_profile['email'] = email
-        st.session_state.portal_view = "Dashboard"
-        st.rerun()
-    else:
-        st.error("Invalid credentials or role selected.")
-
+# ----------------------------------------------------------------------
+# LOGOUT
+# ----------------------------------------------------------------------
 def logout():
-    st.session_state.logged_in = False
-    st.session_state.user_profile = None
+    for key in ['logged_in', 'user_profile', 'active_chat_request', 'portal_view', 'admin_view']:
+        if key in st.session_state:
+            del st.session_state[key]
     st.session_state.selected_role = 'patient'
-    st.session_state.admin_view = "AddDoctor"
-    st.session_state.portal_view = "Dashboard"
-    st.session_state.active_chat_request = None
     st.rerun()
-
-def add_doctor(doc_id, name, email, specialty, qualification, mobile):
-    if add_user(email, "doctor", name, mobile, specialty, doc_id, qualification):
-        st.success(f"Successfully added Doctor: **{name}** (ID: {doc_id})")
-        return True
-    else:
-        st.error(f"Error: User with email **{email}** or ID **{doc_id}** already exists.")
-        return False
-
-def remove_doctor(email):
-    name = remove_user(email)
-    if name:
-        st.warning(f"Successfully removed Doctor: **{name}**")
-        return True
-    else:
-        st.error(f"Error: Doctor with email **{email}** not found.")
-        return False

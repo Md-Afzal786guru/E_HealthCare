@@ -1,25 +1,92 @@
 import sqlite3
+import bcrypt
 import time
+import random
 import streamlit as st
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import os
+from pathlib import Path
 
-def init_database():
-    """Initializes the SQLite database and creates necessary tables."""
-    conn = sqlite3.connect('healthcare.db', check_same_thread=False)
-    c = conn.cursor()
+def load_env():
+    env_path = Path('.env')
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
 
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
+load_env()
+def get_patients_conn():
+    if 'patients_conn' not in st.session_state:
+        st.session_state.patients_conn = sqlite3.connect('patients.db', check_same_thread=False)
+    return st.session_state.patients_conn
+
+def get_doctors_conn():
+    if 'doctors_conn' not in st.session_state:
+        st.session_state.doctors_conn = sqlite3.connect('doctors.db', check_same_thread=False)
+    return st.session_state.doctors_conn
+
+def get_patients_cursor(): return get_patients_conn().cursor()
+def get_doctors_cursor():  return get_doctors_conn().cursor()
+
+def commit_patients(): get_patients_conn().commit()
+def commit_doctors():  get_doctors_conn().commit()
+
+def init_databases():
+    pc = get_patients_cursor()
+    pc.execute('''
+        CREATE TABLE IF NOT EXISTS patients (
             email TEXT PRIMARY KEY,
-            role TEXT NOT NULL,
+            password TEXT NOT NULL,
+            name TEXT NOT NULL,
+            mobile TEXT,
+            patient_id TEXT UNIQUE
+        )
+    ''')
+    pc.execute('''
+        CREATE TABLE IF NOT EXISTS submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            symptoms TEXT,
+            prediction TEXT,
+            patient_email TEXT
+        )
+    ''')
+    pc.execute('''
+        CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_email TEXT,
+            feedback TEXT,
+            timestamp TEXT
+        )
+    ''')
+    pc.execute('''
+        CREATE TABLE IF NOT EXISTS otp_verifications (
+            email TEXT PRIMARY KEY,
+            otp TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            attempts INTEGER DEFAULT 0
+        )
+    ''')
+    commit_patients()
+
+    dc = get_doctors_cursor()
+    dc.execute('''
+        CREATE TABLE IF NOT EXISTS doctors (
+            email TEXT PRIMARY KEY,
+            password TEXT NOT NULL,
             name TEXT NOT NULL,
             mobile TEXT,
             specialty TEXT,
-            doc_id TEXT,
+            doc_id TEXT UNIQUE,
             qualification TEXT
         )
     ''')
-
-    c.execute('''
+    dc.execute('''
         CREATE TABLE IF NOT EXISTS chat_requests (
             request_id INTEGER PRIMARY KEY,
             patient_email TEXT,
@@ -33,266 +100,235 @@ def init_database():
             patient_name TEXT,
             patient_id TEXT,
             flag TEXT,
-            timestamp TEXT,
-            FOREIGN KEY (patient_email) REFERENCES users(email),
-            FOREIGN KEY (doctor_email) REFERENCES users(email)
+            timestamp TEXT
         )
     ''')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS submissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT,
-            symptoms TEXT,
-            prediction TEXT,
-            patient_email TEXT,
-            FOREIGN KEY (patient_email) REFERENCES users(email)
-        )
-    ''')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_email TEXT,
-            feedback TEXT,
-            timestamp TEXT,
-            FOREIGN KEY (user_email) REFERENCES users(email)
-        )
-    ''')
-
-    c.execute('''
+    dc.execute('''
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             request_id INTEGER,
             sender TEXT,
             role TEXT,
             text TEXT,
-            timestamp TEXT,
-            FOREIGN KEY (request_id) REFERENCES chat_requests(request_id)
+            timestamp TEXT
         )
     ''')
-
-    c.execute('''
+    dc.execute('''
         CREATE TABLE IF NOT EXISTS notifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_email TEXT,
             message TEXT,
             status TEXT DEFAULT 'unread',
             timestamp TEXT,
-            request_id INTEGER,
-            FOREIGN KEY (user_email) REFERENCES users(email),
-            FOREIGN KEY (request_id) REFERENCES chat_requests(request_id)
+            request_id INTEGER
         )
     ''')
+    commit_doctors()
 
-    conn.commit()
-    return conn
+if 'db_initialized' not in st.session_state:
+    init_databases()
+    st.session_state.db_initialized = True
 
-if 'db_conn' not in st.session_state:
-    st.session_state.db_conn = init_database()
+def hash_password(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-def get_db_cursor():
-    return st.session_state.db_conn.cursor()
+def check_password(pw: str, hashed: str) -> bool:
+    return bcrypt.checkpw(pw.encode('utf-8'), hashed.encode('utf-8'))
 
-def commit_db():
-    st.session_state.db_conn.commit()
-
-def get_users():
-    c = get_db_cursor()
-    c.execute('SELECT * FROM users')
-    rows = c.fetchall()
-    users = {}
-    for row in rows:
-        users[row[0]] = {
-            "email": row[0],
-            "role": row[1],
-            "name": row[2],
-            "mobile": row[3],
-            "specialty": row[4],
-            "doc_id": row[5],
-            "qualification": row[6]
-        }
-    return users
-
-def add_user(email, role, name, mobile=None, specialty=None, doc_id=None, qualification=None):
-    c = get_db_cursor()
+def register_patient(email, password, name, mobile):
+    pid = "P" + (mobile[-6:] if mobile and len(mobile) >= 6 else f"{random.randint(100000,999999)}")
+    c = get_patients_cursor()
     try:
-        c.execute('''
-            INSERT INTO users (email, role, name, mobile, specialty, doc_id, qualification)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (email, role, name, mobile, specialty, doc_id, qualification))
-        commit_db()
+        c.execute('INSERT INTO patients (email, password, name, mobile, patient_id) VALUES (?, ?, ?, ?, ?)',
+                  (email, hash_password(password), name, mobile, pid))
+        commit_patients()
         return True
     except sqlite3.IntegrityError:
         return False
 
-def remove_user(email):
-    c = get_db_cursor()
-    c.execute('SELECT name, role FROM users WHERE email = ?', (email,))
-    user = c.fetchone()
-    if user and user[1] == 'doctor':
-        c.execute('DELETE FROM users WHERE email = ?', (email,))
-        commit_db()
-        return user[0]
+def get_patient(email):
+    c = get_patients_cursor()
+    c.execute('SELECT * FROM patients WHERE email = ?', (email,))
+    row = c.fetchone()
+    if row:
+        return {"email": row[0], "password": row[1], "name": row[2], "mobile": row[3], "patient_id": row[4], "role": "patient"}
     return None
 
+def add_doctor(email, password, name, mobile, specialty, doc_id, qualification):
+    c = get_doctors_cursor()
+    try:
+        c.execute('''
+            INSERT INTO doctors (email, password, name, mobile, specialty, doc_id, qualification)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (email, hash_password(password), name, mobile, specialty, doc_id, qualification))
+        commit_doctors()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+def get_doctor(email):
+    c = get_doctors_cursor()
+    c.execute('SELECT * FROM doctors WHERE email = ?', (email,))
+    row = c.fetchone()
+    if row:
+        return {
+            "email": row[0], "password": row[1], "name": row[2],
+            "mobile": row[3], "specialty": row[4], "doc_id": row[5],
+            "qualification": row[6], "role": "doctor"
+        }
+    return None
+
+def get_all_doctors():
+    c = get_doctors_cursor()
+    c.execute('SELECT email, name, mobile, specialty, doc_id, qualification FROM doctors')
+    return [{"email":r[0],"name":r[1],"mobile":r[2],"specialty":r[3],"doc_id":r[4],"qualification":r[5],"role":"doctor"} for r in c.fetchall()]
+
+def save_otp(email, otp):
+    c = get_patients_cursor()
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    c.execute('INSERT OR REPLACE INTO otp_verifications (email, otp, created_at, attempts) VALUES (?, ?, ?, 0)', (email, otp, now))
+    commit_patients()
+
+def get_otp(email):
+    c = get_patients_cursor()
+    c.execute('SELECT otp, created_at, attempts FROM otp_verifications WHERE email = ?', (email,))
+    row = c.fetchone()
+    if row:
+        otp, created_at, attempts = row
+        if (time.time() - time.mktime(time.strptime(created_at, "%Y-%m-%d %H:%M:%S"))) > 600:
+            delete_otp(email)
+            return None
+        return {"otp": otp, "attempts": attempts}
+    return None
+
+def increment_otp_attempts(email):
+    c = get_patients_cursor()
+    c.execute('UPDATE otp_verifications SET attempts = attempts + 1 WHERE email = ?', (email,))
+    commit_patients()
+
+def delete_otp(email):
+    c = get_patients_cursor()
+    c.execute('DELETE FROM otp_verifications WHERE email = ?', (email,))
+    commit_patients()
+
+def send_verification_email(email, otp):
+    sender = os.getenv("EMAIL_USER")
+    password = os.getenv("EMAIL_PASS")
+    if not sender or not password:
+        st.error("Email not configured. Add EMAIL_USER and EMAIL_PASS to .env")
+        return False
+
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = email
+    msg["Subject"] = "E-Healthcare: Verify Your Account"
+
+    body = f"""
+    <h2>Welcome!</h2>
+    <p>Your verification code:</p>
+    <h1 style="letter-spacing:5px;color:#0066cc;">{otp}</h1>
+    <p>Expires in 10 minutes.</p>
+    """
+    msg.attach(MIMEText(body, "html"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender, password)
+            server.sendmail(sender, email, msg.as_string())
+        return True
+    except Exception as e:
+        st.error(f"Email failed: {e}")
+        return False
+
 def get_chat_requests():
-    c = get_db_cursor()
-    c.execute('SELECT * FROM chat_requests')
-    rows = c.fetchall()
-    return [{
-        "request_id": row[0],
-        "patient_email": row[1],
-        "doctor_email": row[2],
-        "specialty": row[3],
-        "doctor_name": row[4],
-        "doctor_id": row[5],
-        "qualification": row[6],
-        "query": row[7],
-        "status": row[8],
-        "patient_name": row[9],
-        "patient_id": row[10],
-        "flag": row[11],
-        "timestamp": row[12]
-    } for row in rows]
+    c = get_doctors_cursor()
+    c.execute('SELECT * FROM chat_requests ORDER BY timestamp DESC')
+    return [{k:v for k,v in zip([
+        "request_id","patient_email","doctor_email","specialty","doctor_name","doctor_id",
+        "qualification","query","status","patient_name","patient_id","flag","timestamp"
+    ], r)} for r in c.fetchall()]
 
-def add_chat_request(request):
-    c = get_db_cursor()
-    c.execute('''
-        INSERT INTO chat_requests (
-            request_id, patient_email, doctor_email, specialty, doctor_name, doctor_id,
-            qualification, query, status, patient_name, patient_id, flag, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        request['request_id'], request['patient_email'], request['doctor_email'], request['specialty'],
-        request['doctor_name'], request['doctor_id'], request['qualification'], request['query'],
-        request['status'], request['patient_name'], request['patient_id'], request['flag'], request['timestamp']
+def add_chat_request(req):
+    c = get_doctors_cursor()
+    c.execute('INSERT INTO chat_requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', (
+        req['request_id'], req['patient_email'], req['doctor_email'], req['specialty'],
+        req['doctor_name'], req['doctor_id'], req['qualification'], req['query'],
+        req['status'], req['patient_name'], req['patient_id'], req['flag'], req['timestamp']
     ))
-    commit_db()
-    add_notification(
-        user_email=request['doctor_email'],
-        message=f"New chat request from {request['patient_name']} (ID: {request['request_id']})",
-        request_id=request['request_id']
-    )
+    commit_doctors()
+    add_notification(req['doctor_email'], f"New request from {req['patient_name']} (ID: {req['request_id']})", req['request_id'])
 
-def update_chat_request_status(request_id, status):
-    c = get_db_cursor()
-    c.execute('SELECT patient_email, doctor_email, patient_name, doctor_name FROM chat_requests WHERE request_id = ?', (request_id,))
-    request = c.fetchone()
-    if request:
-        patient_email, doctor_email, patient_name, doctor_name = request
-        c.execute('UPDATE chat_requests SET status = ? WHERE request_id = ?', (status, request_id))
-        commit_db()
-        if status == 'Accepted':
-            add_notification(
-                user_email=patient_email,
-                message=f"Your chat request (ID: {request_id}) has been accepted by Dr. {doctor_name}",
-                request_id=request_id
-            )
-        elif status == 'Closed':
-            add_notification(
-                user_email=patient_email,
-                message=f"Chat session (ID: {request_id}) with Dr. {doctor_name} has been closed",
-                request_id=request_id
-            )
+def update_chat_request_status(rid, status):
+    c = get_doctors_cursor()
+    c.execute('SELECT patient_email, doctor_name FROM chat_requests WHERE request_id = ?', (rid,))
+    res = c.fetchone()
+    if res:
+        p_email, d_name = res
+        c.execute('UPDATE chat_requests SET status = ? WHERE request_id = ?', (status, rid))
+        commit_doctors()
+        if status == "Accepted":
+            add_notification(p_email, f"Dr. {d_name} accepted (ID: {rid})", rid)
+        elif status == "Closed":
+            add_notification(p_email, f"Chat closed (ID: {rid})", rid)
 
-def get_chat_messages(request_id):
-    c = get_db_cursor()
-    c.execute('SELECT sender, role, text, timestamp FROM chat_messages WHERE request_id = ?', (request_id,))
-    rows = c.fetchall()
-    return [{
-        "sender": row[0],
-        "role": row[1],
-        "text": row[2],
-        "timestamp": row[3]
-    } for row in rows]
+def get_chat_messages(rid):
+    c = get_doctors_cursor()
+    c.execute('SELECT sender, role, text, timestamp FROM chat_messages WHERE request_id = ? ORDER BY id', (rid,))
+    return [{"sender":r[0],"role":r[1],"text":r[2],"timestamp":r[3]} for r in c.fetchall()]
 
-def add_chat_message(request_id, sender, role, text, timestamp):
-    c = get_db_cursor()
-    c.execute('''
-        INSERT INTO chat_messages (request_id, sender, role, text, timestamp)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (request_id, sender, role, text, timestamp))
-    commit_db()
-    c.execute('SELECT patient_email, doctor_email, patient_name, doctor_name FROM chat_requests WHERE request_id = ?', (request_id,))
-    request = c.fetchone()
-    if request:
-        patient_email, doctor_email, patient_name, doctor_name = request
-        recipient_email = doctor_email if role == 'patient' else patient_email
-        recipient_name = doctor_name if role == 'patient' else patient_name
-        add_notification(
-            user_email=recipient_email,
-            message=f"New message from {sender} in chat session (ID: {request_id})",
-            request_id=request_id
-        )
+def add_chat_message(rid, sender, role, text):
+    ts = time.strftime("%H:%M")
+    c = get_doctors_cursor()
+    c.execute('INSERT INTO chat_messages (request_id, sender, role, text, timestamp) VALUES (?,?,?,?,?)',
+              (rid, sender, role, text, ts))
+    commit_doctors()
+    c.execute('SELECT patient_email, doctor_email FROM chat_requests WHERE request_id = ?', (rid,))
+    p, d = c.fetchone()
+    recipient = d if role == "patient" else p
+    add_notification(recipient, f"New message from {sender}", rid)
 
-def get_submissions(patient_email=None):
-    c = get_db_cursor()
-    if patient_email:
-        c.execute('SELECT id, date, symptoms, prediction, patient_email FROM submissions WHERE patient_email = ?', (patient_email,))
+def add_submission(sub):
+    c = get_patients_cursor()
+    c.execute('INSERT INTO submissions (date, symptoms, prediction, patient_email) VALUES (?,?,?,?)',
+              (sub['date'], sub['symptoms'], sub['prediction'], sub['patient_email']))
+    commit_patients()
+
+def get_submissions(email=None):
+    c = get_patients_cursor()
+    if email:
+        c.execute('SELECT id, date, symptoms, prediction FROM submissions WHERE patient_email = ?', (email,))
     else:
         c.execute('SELECT id, date, symptoms, prediction, patient_email FROM submissions')
-    rows = c.fetchall()
-    return [{
-        "id": row[0],
-        "date": row[1],
-        "symptoms": row[2],
-        "prediction": row[3],
-        "patient_email": row[4]
-    } for row in rows]
+    return [{"id":r[0],"date":r[1],"symptoms":r[2],"prediction":r[3],"patient_email":r[4] if len(r)>4 else None} for r in c.fetchall()]
 
-def add_submission(submission):
-    c = get_db_cursor()
-    c.execute('''
-        INSERT INTO submissions (date, symptoms, prediction, patient_email)
-        VALUES (?, ?, ?, ?)
-    ''', (submission['date'], submission['symptoms'], submission['prediction'], submission['patient_email']))
-    commit_db()
+def add_feedback(fb):
+    c = get_patients_cursor()
+    c.execute('INSERT INTO feedback (user_email, feedback, timestamp) VALUES (?,?,?)',
+              (fb['user_email'], fb['feedback'], fb['timestamp']))
+    commit_patients()
 
 def get_feedback():
-    c = get_db_cursor()
+    c = get_patients_cursor()
     c.execute('SELECT user_email, feedback, timestamp FROM feedback')
-    rows = c.fetchall()
-    return [{
-        "user_email": row[0],
-        "feedback": row[1],
-        "timestamp": row[2]
-    } for row in rows]
+    return [{"user_email":r[0],"feedback":r[1],"timestamp":r[2]} for r in c.fetchall()]
 
-def add_feedback(feedback):
-    c = get_db_cursor()
-    c.execute('''
-        INSERT INTO feedback (user_email, feedback, timestamp)
-        VALUES (?, ?, ?)
-    ''', (feedback['user_email'], feedback['feedback'], feedback['timestamp']))
-    commit_db()
+def add_notification(email, msg, rid=None):
+    c = get_doctors_cursor()
+    c.execute('INSERT INTO notifications (user_email, message, timestamp, request_id) VALUES (?,?,?,?)',
+              (email, msg, time.strftime("%Y-%m-%d %H:%M:%S"), rid))
+    commit_doctors()
 
-def add_notification(user_email, message, request_id=None):
-    c = get_db_cursor()
-    c.execute('''
-        INSERT INTO notifications (user_email, message, status, timestamp, request_id)
-        VALUES (?, ?, 'unread', ?, ?)
-    ''', (user_email, message, time.strftime("%Y-%m-%d %H:%M:%S"), request_id))
-    commit_db()
+def get_notifications(email):
+    c = get_doctors_cursor()
+    c.execute('SELECT id, message, status, timestamp, request_id FROM notifications WHERE user_email = ? ORDER BY timestamp DESC', (email,))
+    return [{"id":r[0],"message":r[1],"status":r[2],"timestamp":r[3],"request_id":r[4]} for r in c.fetchall()]
 
-def get_notifications(user_email):
-    c = get_db_cursor()
-    c.execute('SELECT id, message, status, timestamp, request_id FROM notifications WHERE user_email = ? ORDER BY timestamp DESC', (user_email,))
-    rows = c.fetchall()
-    return [{
-        "id": row[0],
-        "message": row[1],
-        "status": row[2],
-        "timestamp": row[3],
-        "request_id": row[4]
-    } for row in rows]
+def mark_notification_read(nid):
+    c = get_doctors_cursor()
+    c.execute('UPDATE notifications SET status = "read" WHERE id = ?', (nid,))
+    commit_doctors()
 
-def mark_notification_read(notification_id):
-    c = get_db_cursor()
-    c.execute('UPDATE notifications SET status = "read" WHERE id = ?', (notification_id,))
-    commit_db()
-
-def mark_notifications_read_by_request(request_id, user_email):
-    c = get_db_cursor()
-    c.execute('UPDATE notifications SET status = "read" WHERE request_id = ? AND user_email = ?', (request_id, user_email))
-    commit_db()
+def mark_notifications_read_by_request(rid, email):
+    c = get_doctors_cursor()
+    c.execute('UPDATE notifications SET status = "read" WHERE request_id = ? AND user_email = ?', (rid, email))
+    commit_doctors()
