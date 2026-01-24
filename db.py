@@ -4,6 +4,7 @@ import time
 import random
 import streamlit as st
 import smtplib
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
@@ -20,6 +21,7 @@ def load_env():
                     os.environ[key.strip()] = value.strip()
 
 load_env()
+
 def get_patients_conn():
     if 'patients_conn' not in st.session_state:
         st.session_state.patients_conn = sqlite3.connect('patients.db', check_same_thread=False)
@@ -123,6 +125,35 @@ def init_databases():
             request_id INTEGER
         )
     ''')
+
+    # File attachments table
+    dc.execute('''
+        CREATE TABLE IF NOT EXISTS chat_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            role TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+    ''')
+
+    # Prescriptions table
+    dc.execute('''
+        CREATE TABLE IF NOT EXISTS prescriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL,
+            patient_email TEXT NOT NULL,
+            doctor_email TEXT NOT NULL,
+            doctor_name TEXT NOT NULL,
+            patient_name TEXT NOT NULL,
+            medicines TEXT NOT NULL,  -- JSON string
+            advice TEXT,
+            timestamp TEXT NOT NULL
+        )
+    ''')
+
     commit_doctors()
 
 if 'db_initialized' not in st.session_state:
@@ -182,6 +213,24 @@ def get_all_doctors():
     c = get_doctors_cursor()
     c.execute('SELECT email, name, mobile, specialty, doc_id, qualification FROM doctors')
     return [{"email":r[0],"name":r[1],"mobile":r[2],"specialty":r[3],"doc_id":r[4],"qualification":r[5],"role":"doctor"} for r in c.fetchall()]
+
+def get_all_patients():
+    """
+    Retrieves all registered patients from the patients database.
+    Returns a list of dictionaries with patient details.
+    """
+    c = get_patients_cursor()
+    c.execute('SELECT email, name, mobile, patient_id FROM patients ORDER BY name')
+    rows = c.fetchall()
+    patients = []
+    for row in rows:
+        patients.append({
+            "email": row[0],
+            "name": row[1],
+            "mobile": row[2],
+            "patient_id": row[3]
+        })
+    return patients
 
 def save_otp(email, otp):
     c = get_patients_cursor()
@@ -286,6 +335,68 @@ def add_chat_message(rid, sender, role, text):
     p, d = c.fetchone()
     recipient = d if role == "patient" else p
     add_notification(recipient, f"New message from {sender}", rid)
+
+# File attachment functions
+def add_chat_attachment(request_id, filename, file_path, sender, role):
+    ts = time.strftime("%H:%M")
+    c = get_doctors_cursor()
+    c.execute('''
+        INSERT INTO chat_attachments 
+        (request_id, filename, file_path, sender, role, timestamp) 
+        VALUES (?,?,?,?,?,?)
+    ''', (request_id, filename, file_path, sender, role, ts))
+    commit_doctors()
+
+    c.execute('SELECT patient_email, doctor_email FROM chat_requests WHERE request_id = ?', (request_id,))
+    p, d = c.fetchone()
+    recipient = d if role == "patient" else p
+    add_notification(recipient, f"New file from {sender}: {filename}", request_id)
+
+def get_chat_attachments(request_id):
+    c = get_doctors_cursor()
+    c.execute('''
+        SELECT sender, role, filename, file_path, timestamp 
+        FROM chat_attachments 
+        WHERE request_id = ? 
+        ORDER BY id
+    ''', (request_id,))
+    return [{"sender":r[0], "role":r[1], "filename":r[2], "file_path":r[3], "timestamp":r[4]} for r in c.fetchall()]
+
+# Prescription functions
+def add_prescription(request_id, patient_email, doctor_email, doctor_name, patient_name, medicines, advice=""):
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    medicines_json = json.dumps(medicines)
+    c = get_doctors_cursor()
+    c.execute('''
+        INSERT INTO prescriptions 
+        (request_id, patient_email, doctor_email, doctor_name, patient_name, medicines, advice, timestamp)
+        VALUES (?,?,?,?,?,?,?,?)
+    ''', (request_id, patient_email, doctor_email, doctor_name, patient_name, medicines_json, advice, ts))
+    commit_doctors()
+
+    add_notification(patient_email, f"New prescription from Dr. {doctor_name} (Chat #{request_id})", request_id)
+
+def get_prescriptions_for_patient(patient_email):
+    c = get_doctors_cursor()
+    c.execute('''
+        SELECT id, request_id, doctor_name, medicines, advice, timestamp 
+        FROM prescriptions 
+        WHERE patient_email = ? 
+        ORDER BY timestamp DESC
+    ''', (patient_email,))
+    rows = c.fetchall()
+    prescriptions = []
+    for row in rows:
+        medicines = json.loads(row[3]) if row[3] else []
+        prescriptions.append({
+            "id": row[0],
+            "request_id": row[1],
+            "doctor_name": row[2],
+            "medicines": medicines,
+            "advice": row[4],
+            "timestamp": row[5]
+        })
+    return prescriptions
 
 def add_submission(sub):
     c = get_patients_cursor()

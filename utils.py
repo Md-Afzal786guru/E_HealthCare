@@ -1,4 +1,3 @@
-# utils.py
 import streamlit as st
 import random
 import time
@@ -8,9 +7,6 @@ from db import (
     get_chat_requests, add_chat_request, add_submission, add_chat_message
 )
 
-# ----------------------------------------------------------------------
-# COLORS & MOCK DATA
-# ----------------------------------------------------------------------
 PRIMARY_BLUE = 'rgb(0, 102, 180)'
 SECONDARY_BLUE = 'rgb(50, 150, 250)'
 NAV_BAR_BG = '#1e1e1e'
