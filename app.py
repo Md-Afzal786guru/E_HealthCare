@@ -82,7 +82,6 @@ def main():
         role = user['role']
 
 
-        # Header
         st.markdown(
             f"""
             <div class="header-bar">

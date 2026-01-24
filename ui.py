@@ -286,10 +286,19 @@ def show_login_page():
         except Exception as e:
             st.image("https://via.placeholder.com/80?text=Logo", width=80)
     with col_title:
-        st.markdown("""
-        <h1 style="margin:0; color:#0ea5e9;">E-Healthcare System</h1>
-        <p style="margin:0; font-size:1.1em; color:#9ca3af;">Digital Access Portal</p>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div style="line-height:1.2;">
+                <h1 style="margin-bottom:4px; color:#0ea5e9;">
+                    🏥 E-Healthcare System
+                </h1>
+                <span style="font-size:1.05em; color:#9ca3af;">
+                    Digital Access Portal
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
     st.markdown('<div class="nav-container">', unsafe_allow_html=True)
     nav_cols = st.columns(4)
